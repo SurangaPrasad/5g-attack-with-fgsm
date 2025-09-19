@@ -59,6 +59,12 @@ class NetworkTrafficMLPipeline:
             'feature_analysis': {},
             'correlation_analysis': {}
         }
+        
+        # Store predictions for confusion matrices
+        self.original_predictions = {}
+        self.adversarial_predictions = {}
+        self.original_true_labels = None
+        self.adversarial_true_labels = None
     
     def load_and_combine_datasets(self, data_dir: Path, dataset_type: str = "original") -> pd.DataFrame:
         """Load and combine all CSV files from a directory"""
@@ -229,6 +235,11 @@ class NetworkTrafficMLPipeline:
                 # Calculate label-wise metrics
                 labelwise_metrics = self._calculate_labelwise_metrics(y_val, y_pred)
                 
+                # Store predictions for confusion matrix
+                self.original_predictions[model_name] = y_pred
+                if self.original_true_labels is None:
+                    self.original_true_labels = y_val
+                
                 # Cross-validation score
                 cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring='accuracy')
                 metrics['cv_mean'] = cv_scores.mean()
@@ -346,6 +357,11 @@ class NetworkTrafficMLPipeline:
                 # Calculate label-wise metrics
                 labelwise_metrics = self._calculate_labelwise_metrics(y_adv, y_pred)
                 adversarial_labelwise_results[model_name] = labelwise_metrics
+                
+                # Store predictions for confusion matrix
+                self.adversarial_predictions[model_name] = y_pred
+                if self.adversarial_true_labels is None:
+                    self.adversarial_true_labels = y_adv
                 
                 print(f"    Adversarial Accuracy: {metrics['accuracy']:.4f}")
                 
@@ -615,9 +631,177 @@ class NetworkTrafficMLPipeline:
             plt.close()
     
     def _plot_confusion_matrices(self):
-        """Plot confusion matrices for all models"""
-        # This would require storing predictions, which we can add if needed
-        pass
+        """Plot confusion matrices for all models on both original and adversarial data"""
+        if not self.original_predictions or not self.adversarial_predictions:
+            print("    No predictions available for confusion matrices")
+            return
+        
+        # Get class names
+        class_names = [self.label_encoder.inverse_transform([i])[0] for i in range(len(self.label_encoder.classes_))]
+        
+        for model_name in self.models.keys():
+            if model_name not in self.original_predictions or model_name not in self.adversarial_predictions:
+                continue
+                
+            # Create figure with subplots for original and adversarial
+            fig, axes = plt.subplots(1, 2, figsize=(20, 8))
+            
+            # Original data confusion matrix
+            cm_orig = confusion_matrix(self.original_true_labels, self.original_predictions[model_name])
+            
+            # Normalize confusion matrix to show percentages
+            cm_orig_norm = cm_orig.astype('float') / cm_orig.sum(axis=1)[:, np.newaxis]
+            
+            # Plot original confusion matrix
+            im1 = axes[0].imshow(cm_orig_norm, interpolation='nearest', cmap='Blues')
+            axes[0].set_title(f'{model_name} - Original Data\nConfusion Matrix (Normalized)', fontsize=14)
+            axes[0].set_xlabel('Predicted Label', fontsize=12)
+            axes[0].set_ylabel('True Label', fontsize=12)
+            
+            # Add class names to ticks
+            tick_marks = np.arange(len(class_names))
+            axes[0].set_xticks(tick_marks)
+            axes[0].set_yticks(tick_marks)
+            axes[0].set_xticklabels(class_names, rotation=45, ha='right')
+            axes[0].set_yticklabels(class_names)
+            
+            # Add text annotations
+            thresh = cm_orig_norm.max() / 2.
+            for i, j in np.ndindex(cm_orig_norm.shape):
+                axes[0].text(j, i, f'{cm_orig_norm[i, j]:.2f}\n({cm_orig[i, j]})',
+                           ha="center", va="center",
+                           color="white" if cm_orig_norm[i, j] > thresh else "black",
+                           fontsize=10)
+            
+            plt.colorbar(im1, ax=axes[0])
+            
+            # Adversarial data confusion matrix
+            cm_adv = confusion_matrix(self.adversarial_true_labels, self.adversarial_predictions[model_name])
+            
+            # Normalize confusion matrix to show percentages
+            cm_adv_norm = cm_adv.astype('float') / cm_adv.sum(axis=1)[:, np.newaxis]
+            
+            # Plot adversarial confusion matrix
+            im2 = axes[1].imshow(cm_adv_norm, interpolation='nearest', cmap='Reds')
+            axes[1].set_title(f'{model_name} - Adversarial Data\nConfusion Matrix (Normalized)', fontsize=14)
+            axes[1].set_xlabel('Predicted Label', fontsize=12)
+            axes[1].set_ylabel('True Label', fontsize=12)
+            
+            # Add class names to ticks
+            axes[1].set_xticks(tick_marks)
+            axes[1].set_yticks(tick_marks)
+            axes[1].set_xticklabels(class_names, rotation=45, ha='right')
+            axes[1].set_yticklabels(class_names)
+            
+            # Add text annotations
+            thresh = cm_adv_norm.max() / 2.
+            for i, j in np.ndindex(cm_adv_norm.shape):
+                axes[1].text(j, i, f'{cm_adv_norm[i, j]:.2f}\n({cm_adv[i, j]})',
+                           ha="center", va="center",
+                           color="white" if cm_adv_norm[i, j] > thresh else "black",
+                           fontsize=10)
+            
+            plt.colorbar(im2, ax=axes[1])
+            
+            plt.tight_layout()
+            plt.savefig(self.results_dir / f"confusion_matrix_{model_name.lower()}.png", 
+                       dpi=300, bbox_inches='tight')
+            plt.close()
+        
+        # Create a comparison plot showing the difference in confusion matrices
+        self._plot_confusion_matrix_comparison()
+    
+    def _plot_confusion_matrix_comparison(self):
+        """Create a comparison plot showing the confusion matrix differences"""
+        if not self.original_predictions or not self.adversarial_predictions:
+            return
+        
+        # Get class names
+        class_names = [self.label_encoder.inverse_transform([i])[0] for i in range(len(self.label_encoder.classes_))]
+        
+        for model_name in self.models.keys():
+            if model_name not in self.original_predictions or model_name not in self.adversarial_predictions:
+                continue
+            
+            # Calculate confusion matrices
+            cm_orig = confusion_matrix(self.original_true_labels, self.original_predictions[model_name])
+            cm_adv = confusion_matrix(self.adversarial_true_labels, self.adversarial_predictions[model_name])
+            
+            # Normalize both matrices
+            cm_orig_norm = cm_orig.astype('float') / cm_orig.sum(axis=1)[:, np.newaxis]
+            cm_adv_norm = cm_adv.astype('float') / cm_adv.sum(axis=1)[:, np.newaxis]
+            
+            # Calculate difference (degradation)
+            cm_diff = cm_orig_norm - cm_adv_norm
+            
+            # Create figure with three subplots
+            fig, axes = plt.subplots(1, 3, figsize=(30, 8))
+            
+            # Original confusion matrix
+            im1 = axes[0].imshow(cm_orig_norm, interpolation='nearest', cmap='Blues', vmin=0, vmax=1)
+            axes[0].set_title(f'{model_name} - Original Data\n(Normalized)', fontsize=14)
+            axes[0].set_xlabel('Predicted Label', fontsize=12)
+            axes[0].set_ylabel('True Label', fontsize=12)
+            
+            tick_marks = np.arange(len(class_names))
+            axes[0].set_xticks(tick_marks)
+            axes[0].set_yticks(tick_marks)
+            axes[0].set_xticklabels(class_names, rotation=45, ha='right')
+            axes[0].set_yticklabels(class_names)
+            
+            # Add text annotations
+            for i, j in np.ndindex(cm_orig_norm.shape):
+                axes[0].text(j, i, f'{cm_orig_norm[i, j]:.2f}',
+                           ha="center", va="center",
+                           color="white" if cm_orig_norm[i, j] > 0.5 else "black",
+                           fontsize=10)
+            
+            plt.colorbar(im1, ax=axes[0])
+            
+            # Adversarial confusion matrix
+            im2 = axes[1].imshow(cm_adv_norm, interpolation='nearest', cmap='Reds', vmin=0, vmax=1)
+            axes[1].set_title(f'{model_name} - Adversarial Data\n(Normalized)', fontsize=14)
+            axes[1].set_xlabel('Predicted Label', fontsize=12)
+            axes[1].set_ylabel('True Label', fontsize=12)
+            
+            axes[1].set_xticks(tick_marks)
+            axes[1].set_yticks(tick_marks)
+            axes[1].set_xticklabels(class_names, rotation=45, ha='right')
+            axes[1].set_yticklabels(class_names)
+            
+            # Add text annotations
+            for i, j in np.ndindex(cm_adv_norm.shape):
+                axes[1].text(j, i, f'{cm_adv_norm[i, j]:.2f}',
+                           ha="center", va="center",
+                           color="white" if cm_adv_norm[i, j] > 0.5 else "black",
+                           fontsize=10)
+            
+            plt.colorbar(im2, ax=axes[1])
+            
+            # Difference matrix (degradation)
+            im3 = axes[2].imshow(cm_diff, interpolation='nearest', cmap='RdYlBu_r', 
+                               vmin=-1, vmax=1)
+            axes[2].set_title(f'{model_name} - Performance Degradation\n(Original - Adversarial)', fontsize=14)
+            axes[2].set_xlabel('Predicted Label', fontsize=12)
+            axes[2].set_ylabel('True Label', fontsize=12)
+            
+            axes[2].set_xticks(tick_marks)
+            axes[2].set_yticks(tick_marks)
+            axes[2].set_xticklabels(class_names, rotation=45, ha='right')
+            axes[2].set_yticklabels(class_names)
+            
+            # Add text annotations
+            for i, j in np.ndindex(cm_diff.shape):
+                color = "white" if abs(cm_diff[i, j]) > 0.5 else "black"
+                axes[2].text(j, i, f'{cm_diff[i, j]:.2f}',
+                           ha="center", va="center", color=color, fontsize=10)
+            
+            plt.colorbar(im3, ax=axes[2])
+            
+            plt.tight_layout()
+            plt.savefig(self.results_dir / f"confusion_matrix_comparison_{model_name.lower()}.png", 
+                       dpi=300, bbox_inches='tight')
+            plt.close()
     
     def run_complete_pipeline(self, correlation_threshold: float = 0.95, test_size: float = 0.2):
         """Run the complete ML pipeline"""
